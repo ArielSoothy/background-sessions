@@ -9,7 +9,6 @@ import os
 from pathlib import Path
 import re
 import secrets
-import shutil
 import stat
 import sys
 import time
@@ -250,7 +249,7 @@ def group_rows(rows):
 
 def write_record(root, kind, sid, text):
     """Atomic, plugin-only writes; no followed directory links or opened destination files."""
-    if os.getenv('SESSION_BOARD_READ_ONLY') == '1':
+    if os.getenv('BACKGROUND_SESSIONS_READ_ONLY') == '1':
         return False
     if kind not in ('usage', 'done') or not SAFE_ID.fullmatch(sid) or len(text) > MAX_BYTES:
         return False
@@ -264,7 +263,7 @@ def write_record(root, kind, sid, text):
         if value.get('sessionId') != sid or not isinstance(value.get('model'), str):
             return False
         value = dict(sessionId=sid, model=clean(value['model']), at=number(value['at']),
-                     **{k: number(value.get(k)) for k in ('tokens', 'window', 'percent')})
+                     **{k: number(value.get(k)) for k in ('contextUsed', 'window', 'percent')})
     elif value.get('cleared') is True:
         value = {'cleared': True, 'at': number(value['at'])}
     elif value.get('reason') in ('done-command', 'session-end'):
@@ -278,13 +277,13 @@ def write_record(root, kind, sid, text):
         # The trusted config root must exist. Create only our own descendants.
         flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
         directory = open_directory(Path(os.path.realpath(root)))
-        data = Path(os.path.realpath(Path(root) / 'session-board'))
+        data = Path(os.path.realpath(Path(root) / 'background-sessions'))
         try:
             child = open_directory(data)
         except FileNotFoundError:
             if clearing:
                 return True
-            os.mkdir('session-board', 0o700, dir_fd=directory)
+            os.mkdir('background-sessions', 0o700, dir_fd=directory)
             child = open_directory(data)
         os.close(directory)
         directory = child
@@ -415,12 +414,12 @@ def collect(jobs, catalog_path, data_dir, writable=False, home=None, own_session
                'state': clean(state.get('state') or 'unknown'), 'jobColor': clean(state.get('color')),
                'tasks': number(flight.get('tasks')) if isinstance(flight, dict) else None, 'closed': bool(closed),
                'startedAt': millis(state.get('createdAt')), 'lastWorkedAt': max((v for v in worked if v is not None), default=None),
-               'model': clean(report.get('model')), 'tokens': number(report.get('tokens')), 'window': number(report.get('window')),
+               'model': clean(report.get('model')), 'contextUsed': number(report.get('contextUsed')), 'window': number(report.get('window')),
                'percent': number(report.get('percent')), 'contextSource': 'reported' if report else 'unknown', **project}
         row['status'] = row_status(row['state'], row['tasks'], row['percent'], row['closed'])
         row['statusColor'] = STATUS[row['status']][0]
         rows.append(row)
-    if writable and inventory_complete and os.getenv('SESSION_BOARD_READ_ONLY') != '1':
+    if writable and inventory_complete and os.getenv('BACKGROUND_SESSIONS_READ_ONLY') != '1':
         prune_files(data_dir, live, jobs)
     return {'at': now, 'rows': group_rows(rows), 'errors': errors, 'inventoryComplete': inventory_complete}
 
@@ -461,8 +460,8 @@ def context_display(row):
     percent = row.get('percent')
     if percent is not None:
         return f'{math.floor(percent+0.5)}%'+(' new session?' if percent >= 80 else ''), ''
-    tokens = row.get('tokens')
-    return ('-' if tokens is None else f'{math.floor(tokens/1000+0.5)}k' if tokens >= 1000 else str(tokens)), '2'
+    used = row.get('contextUsed')
+    return ('-' if used is None else f'{math.floor(used/1000+0.5)}k' if used >= 1000 else str(used)), '2'
 
 
 def started_text(at, now):
@@ -518,6 +517,15 @@ def render_table(board, width, color=True):
     return '\n'.join(lines)
 
 
+def terminal_width():
+    """Read the terminal directly without consulting sizing environment variables."""
+    try:
+        width = os.get_terminal_size(sys.__stdout__.fileno()).columns
+        return width if width > 0 else 160
+    except (OSError, ValueError, AttributeError):
+        return 160
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--json', action='store_true', help='Emit pane data.')
@@ -534,26 +542,26 @@ def main():
     root = expand_path(configured, valid_home)
     root = os.path.realpath(root) if root else None
     if args.read_marker:
-        data = Path(os.path.realpath(Path(root) / 'session-board')) if root else None
+        data = Path(os.path.realpath(Path(root) / 'background-sessions')) if root else None
         marker = read_json(data / 'done' / (args.read_marker + '.json'), {}, data) if data and SAFE_ID.fullmatch(args.read_marker) else {}
         print(json.dumps(marker))
         return 0
     if args.write_record:
-        allowed = root is not None and not args.read_only and os.getenv('SESSION_BOARD_READ_ONLY') != '1'
+        allowed = root is not None and not args.read_only and os.getenv('BACKGROUND_SESSIONS_READ_ONLY') != '1'
         print(json.dumps({'written': bool(allowed and write_record(root, *args.write_record))}))
         return 0
     board = {'at': int(time.time() * 1000), 'rows': [], 'errors': []}
     if root:
-        board = collect(Path(root) / 'jobs', None, Path(root) / 'session-board', not args.read_only, home=valid_home, own_session=args.own_session)
+        board = collect(Path(root) / 'jobs', None, Path(root) / 'background-sessions', not args.read_only, home=valid_home, own_session=args.own_session)
     if args.json:
         print(json.dumps(board, separators=(',', ':')))
     else:
-        print(render_table(board, args.width if args.width is not None else shutil.get_terminal_size((160, 24)).columns,
-                           not args.no_color and os.getenv('NO_COLOR') is None))
+        print(render_table(board, args.width if args.width is not None else terminal_width(),
+                           not args.no_color and os.getenv('BACKGROUND_SESSIONS_NO_COLOR') != '1'))
         if not board['rows'] and not board['errors']:
             print('No background sessions.')
         for error in board['errors']:
-            print('session-board: ' + error, file=sys.stderr)
+            print('background-sessions: ' + error, file=sys.stderr)
     return 0
 
 

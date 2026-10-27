@@ -20,7 +20,7 @@ class PublicHelperTests(unittest.TestCase):
         self.addCleanup(self.temp.cleanup)
         self.home = Path(self.temp.name).resolve()
         self.jobs = self.home / '.claude/jobs'
-        self.data = self.home / '.claude/session-board'
+        self.data = self.home / '.claude/background-sessions'
         self.data.mkdir(parents=True)
         self.jobs.mkdir(parents=True)
 
@@ -85,11 +85,11 @@ class PublicHelperTests(unittest.TestCase):
         self.assertEqual([r['id'] for r in self.collect()['rows']], ['session-1'])
 
     def test_only_mod_reports_supply_usage(self):
-        self.job(model='ignored', tokens=9999)
+        self.job(model='ignored', contextUsed=9999)
         row = self.collect()['rows'][0]
-        self.assertEqual((row['model'], row['tokens']), ('', None))
-        self.put(self.data / 'usage/session-1.json', {'sessionId': 'session-1', 'model': 'example-model', 'tokens': 20, 'window': 100, 'percent': 20})
-        self.assertEqual(self.collect()['rows'][0]['tokens'], 20)
+        self.assertEqual((row['model'], row['contextUsed']), ('', None))
+        self.put(self.data / 'usage/session-1.json', {'sessionId': 'session-1', 'model': 'example-model', 'contextUsed': 20, 'window': 100, 'percent': 20})
+        self.assertEqual(self.collect()['rows'][0]['contextUsed'], 20)
 
     def test_pruning_and_read_only(self):
         self.job()
@@ -158,10 +158,10 @@ class PublicHelperTests(unittest.TestCase):
 
     def test_helper_record_writes_are_atomic_and_plugin_only(self):
         root = self.home / '.claude'
-        self.assertTrue(sessions.write_record(root, 'usage', 'session-1', json.dumps({'sessionId': 'session-1', 'model': 'example-model', 'tokens': 20, 'window': 100, 'percent': 20, 'at': 1, 'unexpected': 'discard'})))
+        self.assertTrue(sessions.write_record(root, 'usage', 'session-1', json.dumps({'sessionId': 'session-1', 'model': 'example-model', 'contextUsed': 20, 'window': 100, 'percent': 20, 'at': 1, 'unexpected': 'discard'})))
         value = json.loads((self.data / 'usage/session-1.json').read_text())
         self.assertNotIn('unexpected', value)
-        self.assertEqual(value['tokens'], 20)
+        self.assertEqual(value['contextUsed'], 20)
         self.assertTrue(sessions.write_record(root, 'done', 'session-1', '{"reason":"done-command","at":1}'))
         self.assertTrue(sessions.write_record(root, 'done', 'session-1', '{"cleared":true,"at":2}'))
         self.assertTrue(json.loads((self.data / 'done/session-1.json').read_text())['cleared'])
@@ -194,7 +194,7 @@ class PublicHelperTests(unittest.TestCase):
         result = subprocess.run(argv, env=env, capture_output=True, text=True, check=True)
         self.assertFalse(json.loads(result.stdout)['written'])
         self.assertFalse((self.data / 'done').exists())
-        env['SESSION_BOARD_READ_ONLY'] = '1'
+        env['BACKGROUND_SESSIONS_READ_ONLY'] = '1'
         argv.remove('--read-only')
         result = subprocess.run(argv, env=env, capture_output=True, text=True, check=True)
         self.assertFalse(json.loads(result.stdout)['written'])
@@ -243,10 +243,10 @@ class PublicHelperTests(unittest.TestCase):
         def run(*args):
             result = subprocess.run(['python3', str(ROOT / 'bin/sessions'), *args], env=env, capture_output=True, text=True, check=True)
             return json.loads(result.stdout)
-        self.assertTrue(run('--write-record', 'usage', 'session-1', '{"sessionId":"session-1","model":"example-model","tokens":26,"window":100,"percent":26,"at":1}')['written'])
+        self.assertTrue(run('--write-record', 'usage', 'session-1', '{"sessionId":"session-1","model":"example-model","contextUsed":26,"window":100,"percent":26,"at":1}')['written'])
         self.assertTrue(run('--write-record', 'done', 'session-1', '{"reason":"done-command","at":1}')['written'])
         row = run('--json')['rows'][0]
-        self.assertEqual((row['status'], row['model'], row['tokens']), ('closed', 'example-model', 26))
+        self.assertEqual((row['status'], row['model'], row['contextUsed']), ('closed', 'example-model', 26))
         self.assertTrue(run('--write-record', 'done', 'session-1', '{"cleared":true,"at":2}')['written'])
         self.assertEqual(run('--json')['rows'][0]['status'], 'yours')
         self.assertEqual((self.jobs / 'session-1/state.json').read_bytes(), before)
@@ -266,11 +266,11 @@ class PublicHelperTests(unittest.TestCase):
         self.job()
         alias = self.home / 'config-link'
         alias.symlink_to(self.home / '.claude', target_is_directory=True)
-        self.assertEqual(sessions.collect(alias / 'jobs', None, alias / 'session-board', home=self.home)['rows'][0]['id'], 'session-1')
+        self.assertEqual(sessions.collect(alias / 'jobs', None, alias / 'background-sessions', home=self.home)['rows'][0]['id'], 'session-1')
         self.assertTrue(sessions.write_record(alias, 'done', 'session-1', '{"at":1,"reason":"done-command"}'))
         ancestor = self.home / 'home-link'
         ancestor.symlink_to(self.home, target_is_directory=True)
-        self.assertEqual(sessions.collect(ancestor / '.claude/jobs', None, ancestor / '.claude/session-board', home=ancestor)['rows'][0]['id'], 'session-1')
+        self.assertEqual(sessions.collect(ancestor / '.claude/jobs', None, ancestor / '.claude/background-sessions', home=ancestor)['rows'][0]['id'], 'session-1')
 
     def test_missing_root_is_not_created(self):
         root = self.home / 'missing/nested'
@@ -350,6 +350,15 @@ class PublicHelperTests(unittest.TestCase):
         for value in ('private-prompt', 'private-intent', 'private-detail', 'private-flight'):
             self.assertNotIn(value, output)
         self.assertEqual(self.collect()['rows'][0]['tasks'], 2)
+
+
+    def test_cli_default_width_ignores_unlisted_environment(self):
+        self.job()
+        env = {'PATH': os.getenv('PATH', os.defpath), 'HOME': str(self.home)}
+        argv = ['python3', str(ROOT / 'bin/sessions'), '--read-only', '--no-color']
+        ordinary = subprocess.run(argv, env=env, capture_output=True, text=True, check=True).stdout
+        altered = subprocess.run(argv, env=dict(env, COLUMNS='1', LINES='1'), capture_output=True, text=True, check=True).stdout
+        self.assertEqual(altered, ordinary)
 
 
 if __name__ == '__main__':

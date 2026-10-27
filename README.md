@@ -1,4 +1,4 @@
-# session-board
+# background-sessions
 
 A small pane for background Claude Code sessions, grouped by working folder. See which sessions need you, are working, encountered an error, or have closed. Usage and model appear only for sessions running this plugin; other sessions show `-`.
 
@@ -14,14 +14,14 @@ A small pane for background Claude Code sessions, grouped by working folder. See
 ## Install
 
 ```text
-/plugin marketplace add ArielSoothy/session-board
-/plugin install session-board@session-board
+/plugin marketplace add ArielSoothy/background-sessions
+/plugin install background-sessions@background-sessions
 ```
 
 For a local checkout, launch Claude Code with the absolute plugin path:
 
 ```sh
-CLAUDE_CODE_PLUGIN_DIRS=/absolute/path/to/session-board claude
+CLAUDE_CODE_PLUGIN_DIRS=/absolute/path/to/background-sessions claude
 ```
 
 ## Requirements and usage
@@ -32,7 +32,7 @@ Run `/sessions` to open or close the pane. A visible pane refreshes every twenty
 
 Colours describe session state: yellow needs your input, green is working, red means an error or context usage of at least 80%, and blue is closed. A completed reply (`done` in host metadata) means your turn; a stopped job or plugin close marker means closed.
 
-Automatic renaming is **on by default**: the plugin puts the project short name (or folder name) into its own session title through `/rename`, as `<Short> · <existing name>`. Set `SESSION_BOARD_NO_RENAME=1` or create `<Claude root>/session-board/no-rename` to disable all automatic renaming, including done suffix changes. A manual `/rename` also disables all subsequent automatic renaming for that session, including adding or removing the done suffix. A manual `/color` disables automatic status colours during normal updates.
+Automatic renaming is **on by default**: the plugin puts the project short name (or folder name) into its own session title through `/rename`, as `<Short> · <existing name>`. Set `BACKGROUND_SESSIONS_NO_RENAME=1` or create `<Claude root>/background-sessions/no-rename` to disable all automatic renaming, including done suffix changes. A manual `/rename` also disables all subsequent automatic renaming for that session, including adding or removing the done suffix. A manual `/color` disables automatic status colours during normal updates.
 
 `/done` marks this session closed in the pane and requests blue plus a ` · done` suffix through the built-in commands. A fresh process startup clears its own close marker and removes the suffix only when its marker records that the plugin added the exact current title and automatic renaming is still enabled. A hook reload preserves the marker. During a turn, normal host colour changes wait until the session is idle. Other sessions' names and colours are never changed.
 
@@ -40,7 +40,7 @@ Automatic renaming is **on by default**: the plugin puts the project short name 
 
 The Claude root is `$CLAUDE_CONFIG_DIR` when set, otherwise `$HOME/.claude`. `~/` in that variable expands using HOME. An absolute CLAUDE_CONFIG_DIR works without HOME; HOME is needed for the default root and to expand `~`. A relative configuration root disables file features. The configured root must already exist: the helper creates only its own data subfolder, never a missing Claude configuration tree.
 
-The plugin data folder is `<Claude root>/session-board/`. Create `projects.json` there if you want custom grouping:
+The plugin data folder is `<Claude root>/background-sessions/`. Create `projects.json` there if you want custom grouping:
 
 ```json
 {
@@ -63,10 +63,10 @@ When roots are omitted, discovery lists existing direct child folders of `~/Proj
 
 | Variable or empty file in the data folder | Effect |
 | --- | --- |
-| `SESSION_BOARD_READ_ONLY=1` | Disable plugin file writes, pruning, persistent store changes and automatic host commands. The pane still works. |
-| `SESSION_BOARD_NO_COLOR=1` or `no-color` | Disable automatic `/color`, including `/done` colours. |
-| `SESSION_BOARD_NO_RENAME=1` or `no-rename` | Disable automatic `/rename`, including the done suffix. |
-| `SESSION_BOARD_NO_DONE=1` or `no-done` | Disable close markers and `/done` effects. |
+| `BACKGROUND_SESSIONS_READ_ONLY=1` | Disable plugin file writes, pruning, persistent store changes and automatic host commands. The pane still works. |
+| `BACKGROUND_SESSIONS_NO_COLOR=1` or `no-color` | Disable automatic `/color`, including `/done` colours. The environment switch also disables standalone helper table colours. |
+| `BACKGROUND_SESSIONS_NO_RENAME=1` or `no-rename` | Disable automatic `/rename`, including the done suffix. |
+| `BACKGROUND_SESSIONS_NO_DONE=1` or `no-done` | Disable close markers and `/done` effects. |
 
 The helper's `--read-only` flag also disables pruning and record writes before any mutation. Manual commands typed by the person still execute in read-only mode. Pane snapshots remain in transient plugin state.
 
@@ -77,6 +77,12 @@ The hook module is `hooks/register.tsx`. It registers `/sessions` and `/done`, r
 The helper opens and parses each job’s `state.json` in memory. It uses exactly `sessionId`, `cwd`, `originCwd`, `state`, `name`, `color`, `createdAt`, `updatedAt`, `lastTerminalAt`, and `inFlight.tasks`. Every other field (which can include the job’s prompt/intent and status detail) is discarded immediately after parsing, never stored or sent. It does not open conversation transcripts or capture turn replies. It queries its own session through `$.session.usage()` and `$.session.model()` and writes numeric usage figures plus a model identifier to `usage/<session-id>.json`. It reads plugin-owned close markers and usage reports for other participating sessions.
 
 It changes its own session's name and colour only through built-in commands. It writes close markers, usage reports, and per-session name/colour ownership records in plugin storage. Startup reopens its own close marker. Session exit writes only a close marker. Stopped jobs from other sessions appear closed only in the pane. Cleanup removes usage/done files and per-session store keys for jobs that no longer exist; the running foreground session's usage/done records and store keys are retained. Cleanup also removes stray `*.tmp` files in the plugin’s data folders. Read-only mode disables this cleanup.
+
+## Commands the mod runs
+
+The mod runs `/rename` and `/color` only on its own session. Startup and idle refreshes prefix the existing title with the project short name and update the status colour. `/done` requests blue and a ` · done` suffix; fresh startup removes that suffix only when an exact owned marker matches the current title.
+
+`BACKGROUND_SESSIONS_READ_ONLY=1` disables automatic commands. `BACKGROUND_SESSIONS_NO_RENAME=1` or `no-rename` disables every automatic rename; a manual `/rename` also disables further automatic renaming for that session. `BACKGROUND_SESSIONS_NO_COLOR=1` or `no-color` disables automatic colours; a manual `/color` disables normal automatic colour updates. `BACKGROUND_SESSIONS_NO_DONE=1` or `no-done` disables close effects. The mod registers `/sessions` to toggle the pane and `/done` to mark its own session closed.
 
 ## Programs the hook runs, and why
 
@@ -90,9 +96,11 @@ Every `$.process.run` call uses one of the following argv templates. There is no
 | `['python3', '<plugin root>/bin/sessions', '--read-marker', '<session id>']` | Read this session’s own done marker to check suffix ownership before clearing it. |
 | `['python3', '<plugin root>/bin/sessions', '--write-record', 'done', '<session id>', '<JSON>']` | Atomically write or clear this session's own close marker. Clearing an absent marker creates no file. |
 
-`<plugin root>` is `$.plugin.root`; `<session id>` comes from `$.session.id()`. Usage JSON contains only `sessionId`, `model`, `tokens`, `window`, `percent` and `at`. Done JSON contains `at` and either a fixed `reason` (`done-command` or `session-end`) or `cleared: true`; a marker may also contain `suffixName`, the exact title with the suffix the plugin added. The JSON is one argv element, never shell text. Python validates the schema, writes only `usage` or `done` files under the plugin folder, and refuses links while traversing directories. Calls have a five-second timeout. Missing Python disables helper collection and record writes for ten minutes and shows a pane diagnostic.
+`<plugin root>` is `$.plugin.root`; `<session id>` comes from `$.session.id()`. Usage JSON contains only `sessionId`, `model`, `contextUsed`, `window`, `percent` and `at`. Done JSON contains `at` and either a fixed `reason` (`done-command` or `session-end`) or `cleared: true`; a marker may also contain `suffixName`, the exact title with the suffix the plugin added. The JSON is one argv element, never shell text. Python validates the schema, writes only `usage` or `done` files under the plugin folder, and refuses links while traversing directories. Calls have a five-second timeout. Missing Python disables helper collection and record writes for ten minutes and shows a pane diagnostic.
 
 ## What the hook sends, and where
+
+The only environment variables the hook and helper read are `HOME`, `CLAUDE_CONFIG_DIR`, and the `BACKGROUND_SESSIONS_*` switches listed above. None are sent anywhere. Standalone table width comes from the terminal (or defaults to 160 columns), with `--width` as an explicit override. The helper inherits the local process environment; no environment values are copied into argv or reports.
 
 The plugin sends nothing over the network and makes no model calls. `/rename` and `/color` requests go only to the current session's built-in command handlers. Usage reports and done markers go under the plugin data folder. Persistent plugin store records hold prefix/colour ownership; transient plugin state holds the current board and startup flag. There is no message-context injection.
 
@@ -107,12 +115,12 @@ The `.claude-plugin/types/` declarations are generated by Anthropic's Claude Cod
 Replace the example path with your absolute checkout location and regenerate declarations with this command:
 
 ```sh
-CLAUDE_CODE_PLUGIN_DIR_WATCH=1 CLAUDE_CODE_PLUGIN_DIRS=/absolute/path/to/session-board claude --print /help --no-session-persistence
+CLAUDE_CODE_PLUGIN_DIR_WATCH=1 CLAUDE_CODE_PLUGIN_DIRS=/absolute/path/to/background-sessions claude --print /help --no-session-persistence
 ```
 
 On Claude Code 2.1.311, a message that `/help` is unavailable after loading is expected; the declarations are still generated. This uses a version-dependent watch switch. Redistribution permission for generated declarations has not been verified.
 
-Run the checks from `/absolute/path/to/session-board`:
+Run the checks from `/absolute/path/to/background-sessions`:
 
 ```sh
 claude plugin validate --profile directory --strict .
@@ -125,7 +133,7 @@ Tests use synthetic fixtures, temporary folders and intercepted hook effects. Th
 
 ## Support
 
-Report problems through [GitHub issues](https://github.com/ArielSoothy/session-board/issues). Remove private paths and session names from reports before posting.
+Report problems through [GitHub issues](https://github.com/ArielSoothy/background-sessions/issues). Remove private paths and session names from reports before posting.
 
 ## License
 

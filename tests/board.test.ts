@@ -5,7 +5,7 @@ import type { SessionRow, Status } from '../types'
 const row = (id: string, projectId: string, lastWorkedAt: number): SessionRow => ({
   id, job: id, name: id, state: 'working',
   projectId, projectName: projectId, projectSource: 'cwd',
-  startedAt: 1000, lastWorkedAt, model: 'claude-opus-5-5', tokens: 262521,
+  startedAt: 1000, lastWorkedAt, model: 'claude-opus-5-5', contextUsed: 262521,
   window: null, percent: null, contextSource: 'reported',
 })
 test('projects are contiguous, ordered by newest activity; rows newest first', () => {

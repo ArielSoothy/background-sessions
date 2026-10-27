@@ -40,8 +40,8 @@ export const formatAge = (ms: number | null): string => {
 }
 
 /** Plain text: colour is reserved for the session state. */
-export const contextDisplay = (tokens: number | null, percent: number | null): Segment => {
-  if (percent === null || !Number.isFinite(percent)) return {text: tokens === null ? '-' : tokens >= 1000 ? `${Math.round(tokens/1000)}k` : `${tokens}`,dim:true}
+export const contextDisplay = (used: number | null, percent: number | null): Segment => {
+  if (percent === null || !Number.isFinite(percent)) return {text: used === null ? '-' : used >= 1000 ? `${Math.round(used/1000)}k` : `${used}`,dim:true}
   return {text:`${Math.round(percent)}%${percent >= 80 ? ' new session?' : ''}`}
 }
 export const stateDisplay = (status: Status): Segment =>
@@ -107,7 +107,7 @@ export const paneLines = (board: Board, columns: number, height: number): BoardL
     previous=row.projectId
     const status=statusOf(row), closed=status === 'closed'
     const dot: Segment={text:'●',...(STATUS_COLOR[status] ? {color:STATUS_COLOR[status]} : {}),...(closed ? {dim:true} : {})}
-    const fields: Segment[]=[dot,{text:row.projectShort ?? row.projectName},{text:names[rowIndex]!},stateDisplay(status),contextDisplay(row.tokens,row.percent),
+    const fields: Segment[]=[dot,{text:row.projectShort ?? row.projectName},{text:names[rowIndex]!},stateDisplay(status),contextDisplay(row.contextUsed,row.percent),
       {text:started(row.startedAt,board.at)},{text:formatAge(row.lastWorkedAt === null ? null : board.at-row.lastWorkedAt)},
       {text:modelShort(row.model)}]
     const segments=fields.flatMap((field,index)=>[...(index ? [{text:' '}] : []),{...field,...(closed ? {color:STATUS_COLOR.closed!,dim:true} : {}),text:fit(field.text,widths[index]!)}])

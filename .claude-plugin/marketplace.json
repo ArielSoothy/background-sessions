@@ -1,10 +1,10 @@
 {
-  "name": "session-board",
-  "description": "Marketplace for the session-board Claude Code plugin",
+  "name": "background-sessions",
+  "description": "Marketplace for the background-sessions Claude Code plugin",
   "owner": {"name": "Ariel Soothy"},
   "plugins": [
     {
-      "name": "session-board",
+      "name": "background-sessions",
       "description": "Background sessions grouped by working folder with status and local usage.",
       "author": {"name": "Ariel Soothy"},
       "source": "./",

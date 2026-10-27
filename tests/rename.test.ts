@@ -26,3 +26,10 @@ test('rename strips ANSI sequences, terminal controls and invisible formatting',
  expect(safeName('a\x1b]0;title\x07b')).toBe('ab')
  expect(decideRename('build\n\x1b[31mnow',{...project,projectShort:'Alpha\x07'},null).name).toBe('Alpha · build now')
 })
+
+test('sanitized names remain unchanged when checked again by the command gate',()=>{
+ for(const name of ['  Build\x07\u202e\t', '\x1b]0;title\x07Build\x1b[31m', 'long name '.repeat(500)+' · done']){
+  const safe=safeName(name)
+  expect(safeName(safe)).toBe(safe)
+ }
+})

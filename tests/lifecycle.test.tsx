@@ -4,7 +4,7 @@ import type { Board } from '../types'
 const NOW=Date.UTC(2026,9,18,10)
 const BOARD:Board={at:NOW,errors:[],rows:[{id:'session-1',job:'job-1',name:'build',rawName:'build',state:'awaiting-input',
  projectId:'alpha',projectName:'Alpha',projectShort:'Alpha',projectSource:'cwd',
- startedAt:NOW-3600000,lastWorkedAt:NOW-60000,model:'',tokens:null,window:null,percent:null,contextSource:'unknown'}]}
+ startedAt:NOW-3600000,lastWorkedAt:NOW-60000,model:'',contextUsed:null,window:null,percent:null,contextSource:'unknown'}]}
 const start={cwd:'/test',surface:'terminal',isInteractive:true} as const
 const complete={answer:'',durationMs:10,isAborted:false,turnId:'t',reason:'answer'} as const
 const command=(name:string,args='')=>({command:name,args,origin:{kind:'composer'},presentation:{isFullscreen:true,columns:160}} as const)
@@ -27,6 +27,7 @@ const setup=(on:On,env:Record<string,string>={})=>{
  on('turn.start',(_,e)=>({turnId:e.turnId}));on('turn.complete',()=>({text:''}))
  on('session.id',()=>({value:'session-1'}))
  on('session.model',()=>({value:'example-model'}))
+ // This fixture follows the engine API; plugin records use contextUsed.
  on('session.usage',()=>({value:{startedAt:NOW,context:{tokens:26,window:100,percent},rateLimits:[]}}))
  on('fs.exists',(_,e)=>({value:files.has(e.path) || disabled.has(e.path.split('/').at(-1)!)}))
  on('command.register',(_,e)=>{registered.push(e.name);expect(e.immediate).toBe(true);return {value:{command:e.name}}})
@@ -39,16 +40,16 @@ const setup=(on:On,env:Record<string,string>={})=>{
  on('process.run',(_,e)=>{
   argvs.push([...e.argv]);
   if(e.argv[2] === '--read-marker'){
-   const text=files.get(`${env.CLAUDE_CONFIG_DIR || '/test-home/.claude'}/session-board/done/${e.argv[3]}.json`) || '{}'
+   const text=files.get(`${env.CLAUDE_CONFIG_DIR || '/test-home/.claude'}/background-sessions/done/${e.argv[3]}.json`) || '{}'
    return {value:{exitCode:0,stdout:text,stderr:'',isStdoutTruncated:false,isStderrTruncated:false}}
   }
   if(e.argv[2] === '--write-record'){
-   const path=`${env.CLAUDE_CONFIG_DIR || '/test-home/.claude'}/session-board/${e.argv[3]}/${e.argv[4]}.json`,text=e.argv[5]!+'\n'
+   const path=`${env.CLAUDE_CONFIG_DIR || '/test-home/.claude'}/background-sessions/${e.argv[3]}/${e.argv[4]}.json`,text=e.argv[5]!+'\n'
    if(!JSON.parse(text).cleared || files.has(path)){writes.push({path,text});files.set(path,text)}
    return {value:{exitCode:0,stdout:'{"written":true}',stderr:'',isStdoutTruncated:false,isStderrTruncated:false}}
   }
   expect(e.argv[0]).toBe('python3');expect(e.argv[1]?.endsWith('/bin/sessions')).toBe(true)
-  expect(e.argv.slice(2)).toEqual(readonly || env.SESSION_BOARD_READ_ONLY === '1' ? ['--json','--own-session','session-1','--read-only'] : ['--json','--own-session','session-1'])
+  expect(e.argv.slice(2)).toEqual(readonly || env.BACKGROUND_SESSIONS_READ_ONLY === '1' ? ['--json','--own-session','session-1','--read-only'] : ['--json','--own-session','session-1'])
   return {value:{exitCode:fail ? 1 : 0,stdout:JSON.stringify({...board,at:clock.now(),rows:board.rows.map(row=>{const marker=[...files.entries()].find(([p])=>p.endsWith(`/done/${row.id}.json`));return {...row,closed:row.closed || (!!marker && !JSON.parse(marker[1]).cleared)}})}),stderr:'',isStdoutTruncated:truncate,isStderrTruncated:false}}
  })
  return {clock,stored,files,writes,colors,names,registered,argvs,disabled,
@@ -59,9 +60,9 @@ const setup=(on:On,env:Record<string,string>={})=>{
 test('start reports numeric own usage, registers commands and prefixes the existing name',async($,on)=>{
  const w=setup(on);await $.session.start(start);await w.clock.advance(1)
  expect(w.registered).toEqual(['sessions','done'])
- expect(JSON.parse(w.writes.find(e=>e.path.includes('/usage/'))!.text)).toEqual({sessionId:'session-1',model:'example-model',tokens:26,window:100,percent:26,at:NOW})
+ expect(JSON.parse(w.writes.find(e=>e.path.includes('/usage/'))!.text)).toEqual({sessionId:'session-1',model:'example-model',contextUsed:26,window:100,percent:26,at:NOW})
  expect(w.colors).toEqual(['yellow']);expect(w.names).toEqual(['Alpha · build'])
- expect(w.writes.every(e=>e.path.startsWith('/test-home/.claude/session-board/'))).toBe(true)
+ expect(w.writes.every(e=>e.path.startsWith('/test-home/.claude/background-sessions/'))).toBe(true)
 })
 test('subagent completion has no own-session side effects and repeated colour is deduplicated',async($,on)=>{
  const w=setup(on);await $.session.start(start);await w.clock.advance(1)
@@ -98,12 +99,12 @@ test('file opt-outs and absent built-in commands stop automatic changes',async($
  expect(w.colors).toEqual(['yellow']);expect(w.names).toEqual(['Alpha · build'])
 })
 test('variable colour and rename opt-outs leave usage enabled',async($,on)=>{
- const w=setup(on,{SESSION_BOARD_NO_COLOR:'1',SESSION_BOARD_NO_RENAME:'1'})
+ const w=setup(on,{BACKGROUND_SESSIONS_NO_COLOR:'1',BACKGROUND_SESSIONS_NO_RENAME:'1'})
  await $.session.start(start);await w.clock.advance(1)
  expect(w.colors).toEqual([]);expect(w.names).toEqual([]);expect(w.writes.filter(e=>e.path.includes('/usage/')).length).toBe(1)
 })
 test('read-only blocks persistent writes, pruning, automatic commands and /done',async($,on)=>{
- const w=setup(on,{SESSION_BOARD_READ_ONLY:'1'});w.stored.set('rename:gone',{disabled:true})
+ const w=setup(on,{BACKGROUND_SESSIONS_READ_ONLY:'1'});w.stored.set('rename:gone',{disabled:true})
  await $.session.start(start);await w.clock.advance(1)
  expect((await $.command.run(command('done'))).text).toBe('Done marking is disabled.')
  await $.command.run(command('color','red'));await $.command.run(command('rename','Custom'))
@@ -115,7 +116,7 @@ test('read-only blocks persistent writes, pruning, automatic commands and /done'
 test('alternate config root is used for all writes',async($,on)=>{
  const w=setup(on,{CLAUDE_CONFIG_DIR:'/custom'})
  await $.session.start(start);await w.clock.advance(1);await $.command.run(command('done'));await w.clock.advance(1)
- expect(w.writes.every(e=>e.path.startsWith('/custom/session-board/'))).toBe(true)
+ expect(w.writes.every(e=>e.path.startsWith('/custom/background-sessions/'))).toBe(true)
 })
 test('absolute config root enables file features without HOME',async($,on)=>{
  const w=setup(on,{HOME:'',CLAUDE_CONFIG_DIR:'/custom'})
@@ -135,7 +136,7 @@ test('helper failures and truncated output show diagnostics and never prune stor
  await $.session.start(start);await w.clock.advance(1)
  expect(w.stored.has('rename:gone')).toBe(true)
  await $.command.run(command('sessions'))
- const ui=await $.ui.mount({plugin:'session-board',surface:'terminal',...PANE})
+ const ui=await $.ui.mount({plugin:'background-sessions',surface:'terminal',...PANE})
  expect(await ui.find({type:'Text',text:'Unable to read sessions; check Python and file permissions.'})).not.toBe(null)
  await ui.unmount()
  w.fail=false;w.truncate=true;await $.turn.complete(complete);await w.clock.advance(1)
@@ -146,7 +147,7 @@ test('pane toggles, renders on both surfaces and polls only while visible',async
  const baseline=w.argvs.length;await w.clock.advance(60000);expect(w.argvs.length).toBe(baseline)
  await $.command.run(command('sessions'))
  for(const surface of ['terminal','desktop'] as const){
-  const ui=await $.ui.mount({plugin:'session-board',surface,...PANE})
+  const ui=await $.ui.mount({plugin:'background-sessions',surface,...PANE})
   expect(await ui.find({type:'Text',text:'●'})).not.toBe(null)
   await w.clock.advance(20001);await ui.unmount()
  }
@@ -157,7 +158,7 @@ test('pane toggles, renders on both surfaces and polls only while visible',async
 test('missing jobs render the empty board message',async($,on)=>{
  const w=setup(on);w.board={at:NOW,rows:[],errors:[]}
  await $.session.start(start);await w.clock.advance(1);await $.command.run(command('sessions'))
- const ui=await $.ui.mount({plugin:'session-board',surface:'terminal',...PANE})
+ const ui=await $.ui.mount({plugin:'background-sessions',surface:'terminal',...PANE})
  expect(await ui.find({type:'Text',text:'No background sessions.'})).not.toBe(null)
  await ui.unmount()
 })
@@ -165,13 +166,13 @@ test('/done uses a marker and commands, a hot reload keeps it closed',async($,on
  const w=setup(on);await $.session.start(start);await w.clock.advance(1)
  await $.command.run(command('done'));await w.clock.advance(1)
  expect(w.colors.at(-1)).toBe('blue');expect(w.names.at(-1)).toBe('Alpha · build · done')
- const marker='/test-home/.claude/session-board/done/session-1.json'
+ const marker='/test-home/.claude/background-sessions/done/session-1.json'
  expect(JSON.parse(w.files.get(marker)!).cleared).toBe(undefined)
  await $.session.start(start);await w.clock.advance(1)
  expect(JSON.parse(w.files.get(marker)!).cleared).toBe(undefined)
 })
 test('startup reopens an own marker using commands and exit writes only a marker',async($,on)=>{
- const w=setup(on),marker='/test-home/.claude/session-board/done/session-1.json'
+ const w=setup(on),marker='/test-home/.claude/background-sessions/done/session-1.json'
  w.files.set(marker,JSON.stringify({at:NOW,reason:'done-command',suffixName:'Alpha · build · done'}))
  w.board={...BOARD,rows:[{...BOARD.rows[0]!,name:'Alpha · build · done',rawName:'Alpha · build · done',closed:true}]}
  await $.session.start(start);await w.clock.advance(1)
@@ -191,7 +192,7 @@ test('manual colour during an automatic command check cancels the pending automa
  expect(w.stored.get('color:session-1')).toEqual({manual:true})
 })
 test('manual rename during an automatic command check keeps the manual name',async($,on)=>{
- const w=setup(on,{SESSION_BOARD_NO_COLOR:'1'})
+ const w=setup(on,{BACKGROUND_SESSIONS_NO_COLOR:'1'})
  w.beforeList=async()=>{await $.command.run(command('rename','Custom'))}
  await $.session.start(start);await w.clock.advance(1)
  expect(w.names).toEqual(['Custom'])
@@ -217,7 +218,7 @@ test('failed helper collection backs off for ten minutes',async($,on)=>{
 })
 test('startup preserves unowned done suffix and manually disabled renames',async($,on)=>{
  const w=setup(on);w.stored.set('rename:session-1',{disabled:true})
- w.files.set('/test-home/.claude/session-board/done/session-1.json',JSON.stringify({at:NOW,reason:'done-command',suffixName:'build · done'}))
+ w.files.set('/test-home/.claude/background-sessions/done/session-1.json',JSON.stringify({at:NOW,reason:'done-command',suffixName:'build · done'}))
  w.board={...BOARD,rows:[{...BOARD.rows[0]!,rawName:'build · done',name:'build · done'}]}
  await $.session.start(start);await w.clock.advance(1)
  expect(w.names).toEqual([])
@@ -228,6 +229,36 @@ test('exit and repeated done preserve suffix ownership for the next startup',asy
  await $.command.run(command('done'));await w.clock.advance(1)
  await $.command.run(command('done'));await w.clock.advance(1)
  await $.session.end({sessionId:'session-1',reason:'quit'})
- const marker=JSON.parse(w.files.get('/test-home/.claude/session-board/done/session-1.json')!)
+ const marker=JSON.parse(w.files.get('/test-home/.claude/background-sessions/done/session-1.json')!)
  expect(marker.suffixName).toBe('Alpha · build · done')
+})
+
+test('automatic rename sanitizes host names before dispatch and done keeps the safe title',async($,on)=>{
+ const w=setup(on)
+ w.board={...BOARD,rows:[{...BOARD.rows[0]!,rawName:'build\x1b[31m\x07\u202e',projectShort:'Alpha\x1b[0m'}]}
+ await $.session.start(start);await w.clock.advance(1)
+ expect(w.names).toEqual(['Alpha · build'])
+ await $.command.run(command('done'));await w.clock.advance(1)
+ expect(w.names).toEqual(['Alpha · build','Alpha · build · done'])
+})
+
+test('unowned plugin-origin rename is refused while a manual unsafe name is passed unchanged',async($,on)=>{
+ const w=setup(on);await $.session.start(start);await w.clock.advance(1)
+ const unsafe='Custom\x07\u202e'
+ await $.command.run({...command('rename',unsafe),origin:{kind:'plugin',name:'background-sessions'}})
+ expect(w.names).toEqual(['Alpha · build'])
+ await $.command.run(command('rename',unsafe))
+ expect(w.names).toEqual(['Alpha · build',unsafe])
+})
+
+
+test('a visible mounted pane updates after a polled snapshot without remounting',async($,on)=>{
+ const w=setup(on);await $.session.start(start);await w.clock.advance(1)
+ await $.command.run(command('sessions'))
+ const ui=await $.ui.mount({plugin:'background-sessions',surface:'terminal',...PANE})
+ expect(!!await ui.find({type:'Text',text:'▶    '})).toBe(false)
+ w.board={...BOARD,rows:[{...BOARD.rows[0]!,rawName:'Alpha · build',state:'working'}]}
+ await w.clock.advance(20001)
+ expect(!!await ui.find({type:'Text',text:'▶    '})).toBe(true)
+ await ui.unmount()
 })

@@ -1,6 +1,7 @@
 import { expect, test } from 'claude-code/testing'
 import type { EngineInterface } from 'claude-code'
-import { appendDone, stripDone, markDone, markerPath, restoreDone, applyDone } from '../hooks/done'
+import { appendDone, stripDone, markerPath } from '../hooks/done'
+import { markDone, restoreDone, applyDone } from '../hooks/register'
 
 const world=()=>{
  const files=new Map<string,string>(),writes:string[]=[],commands:string[]=[],deleted:string[]=[]
@@ -10,8 +11,8 @@ const world=()=>{
   env:{get:async(key:string)=>env[key]},session:{id:async()=>'session-1'},
   fs:{exists:async()=>false},
   process:{run:async(argv:string[])=>{
-   if(argv[2] === '--read-marker') return {exitCode:0,stdout:files.get(`${env.CLAUDE_CONFIG_DIR || '/test-home/.claude'}/session-board/done/${argv[3]}.json`) || '{}',stderr:'',isStdoutTruncated:false,isStderrTruncated:false}
-   const path=`${env.CLAUDE_CONFIG_DIR || '/test-home/.claude'}/session-board/${argv[3]}/${argv[4]}.json`
+   if(argv[2] === '--read-marker') return {exitCode:0,stdout:files.get(`${env.CLAUDE_CONFIG_DIR || '/test-home/.claude'}/background-sessions/done/${argv[3]}.json`) || '{}',stderr:'',isStdoutTruncated:false,isStderrTruncated:false}
+   const path=`${env.CLAUDE_CONFIG_DIR || '/test-home/.claude'}/background-sessions/${argv[3]}/${argv[4]}.json`
    writes.push(path);files.set(path,argv[5]!+'\n')
    return {exitCode:0,stdout:'{"written":true}',stderr:'',isStdoutTruncated:false,isStderrTruncated:false}
   }},
@@ -46,7 +47,7 @@ test('a fresh resume clears only the own marker and renames through a callback',
  expect(JSON.parse(w.files.get(w.writes.at(-1)!)!).cleared).toBe(true)
  expect(w.commands).toEqual(['rename:Alpha · Build'])
  expect(w.deleted).toEqual(['color:session-1'])
- expect(w.writes.every(p=>p.includes('/session-board/done/'))).toBe(true)
+ expect(w.writes.every(p=>p.includes('/background-sessions/done/'))).toBe(true)
 })
 test('marker ids and commands cannot target other sessions',async()=>{
  const w=world()
@@ -57,7 +58,7 @@ test('marker ids and commands cannot target other sessions',async()=>{
 })
 test('read-only suppresses markers, store changes and commands including resume',async()=>{
  const w=world();await markDone(w.$,'session-1');w.writes.length=0
- w.env.SESSION_BOARD_READ_ONLY='1'
+ w.env.BACKGROUND_SESSIONS_READ_ONLY='1'
  expect(await markDone(w.$,'session-1')).toBe(false)
  await restoreDone(w.$,'session-1','Build · done',w.rename)
  await applyDone(w.$,'session-1','Build',w.rename)
@@ -66,7 +67,7 @@ test('read-only suppresses markers, store changes and commands including resume'
 test('absolute config directory works without HOME',async()=>{
  const w=world();w.env.CLAUDE_CONFIG_DIR='/custom'
  await markDone(w.$,'session-1')
- expect(w.writes).toEqual([markerPath('/custom/session-board','session-1')])
+ expect(w.writes).toEqual([markerPath('/custom/background-sessions','session-1')])
  delete w.env.HOME
  expect(await markDone(w.$,'session-1')).toBe(true)
 })

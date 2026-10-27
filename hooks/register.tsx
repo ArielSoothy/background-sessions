@@ -1,28 +1,118 @@
-import { atom, read, update } from 'claude-code'
-import type { CommandRunInput, EngineInterface, Register } from 'claude-code'
+import type { CommandRunInput, EngineInterface, On } from 'claude-code'
 import type { Board } from '../types'
 import { clean, fit, paneLines, rowStatus, STATUS_COLOR } from './board'
 import { decideRename, safeName } from './rename'
 import type { RenameState } from './rename'
-import { applyDone, markDone, restoreDone } from './done'
-import { dataDir, enabled, readOnly, SAFE_ID, writeObject, runHelper, helperFailed } from './settings'
+import { appendDone, stripDone, hasDone, markerPath, DONE_COLOUR } from './done'
+import { SAFE_ID } from './settings'
+
+export async function readOnly($:EngineInterface){return await $.env.get('BACKGROUND_SESSIONS_READ_ONLY') === '1'}
+
+/** HOME is required only for the default root or tilde expansion. */
+export async function configRoot($:EngineInterface):Promise<string|null>{
+  const home=await $.env.get('HOME')
+  const validHome=home?.startsWith('/') && !home.includes('\0') ? home : null
+  let root=await $.env.get('CLAUDE_CONFIG_DIR') || (validHome ? `${validHome}/.claude` : '')
+  if(root === '~' || root.startsWith('~/')){if(!validHome) return null;root=validHome+root.slice(1)}
+  if(!root.startsWith('/') || root.includes('\0')) return null
+  const parts:string[]=[]
+  for(const part of root.split('/')){if(part === '..') parts.pop();else if(part && part !== '.') parts.push(part)}
+  return '/'+parts.join('/')
+}
+export async function dataDir($:EngineInterface){const root=await configRoot($);return root ? `${root}/background-sessions` : null}
+
+/** Python owns descriptor-based file writes; the engine has no no-follow write primitive. */
+export async function writeObject($:EngineInterface,path:string,value:unknown){
+  const dir=await dataDir($)
+  if(!dir || await readOnly($) || !path.startsWith(`${dir}/`)) return false
+  const relative=path.slice(dir.length+1)
+  const match=/^(usage|done)\/([A-Za-z0-9_-]+)\.json$/.exec(relative)
+  if(!match) return false
+  try{
+    const result=await runHelper($,['--write-record',match[1]!,match[2]!,JSON.stringify(value)])
+    if(!result) return false
+    const written=(JSON.parse(result.stdout) as {written?:unknown}).written === true
+    if(!written) await helperFailed($)
+    return written
+  }catch{return false}
+}
+export async function enabled($:EngineInterface,feature:'color'|'rename'|'done'){
+  const dir=await dataDir($)
+  if(dir === null || await readOnly($)) return false
+  const optOut=feature === 'color' ? await $.env.get('BACKGROUND_SESSIONS_NO_COLOR') : feature === 'rename' ? await $.env.get('BACKGROUND_SESSIONS_NO_RENAME') : await $.env.get('BACKGROUND_SESSIONS_NO_DONE')
+  return optOut !== '1' && !await $.fs.exists(`${dir}/no-${feature}`)
+}
+
+let retryAfter=0
+export async function helperFailed($:EngineInterface){
+  const now=await $.clock.now()
+  if(now >= retryAfter) retryAfter=now+600_000
+}
+/** Collection and record writes share a cooldown when Python fails. */
+export async function runHelper($:EngineInterface,args:string[]){
+  if(await $.clock.now() < retryAfter) return null
+  try{
+    const result=await $.process.run(['python3',`${$.plugin.root}/bin/sessions`,...args],{timeoutMs:5000})
+    if(result.exitCode !== 0 || result.isStdoutTruncated) throw new Error('Helper failed')
+    JSON.parse(result.stdout)
+    return result
+  }catch{await helperFailed($);return null}
+}
+export async function readMarker($:EngineInterface,id:string):Promise<{suffixName?:string}>{
+  if(!SAFE_ID.test(id)) return {}
+  const result=await runHelper($,['--read-marker',id])
+  if(!result) return {}
+  const value=JSON.parse(result.stdout)
+  return value && typeof value === 'object' ? value : {}
+}
+
+export async function markDone($:EngineInterface,id:string,reason='done-command'){
+  const dir=await dataDir($)
+  if(!dir || !SAFE_ID.test(id) || id !== await $.session.id() || !await enabled($,'done')) return false
+  const marker=await readMarker($,id)
+  return writeObject($,markerPath(dir,id),{at:await $.clock.now(),reason,...(typeof marker.suffixName === 'string' ? {suffixName:marker.suffixName} : {})})
+}
+
+/** All visible host changes use commands bound to the running session. */
+export async function applyDone($:EngineInterface,id:string,name:string|null,rename:(name:string)=>Promise<void|boolean>){
+  if(id !== await $.session.id() || !await enabled($,'done')) return
+  const commands=await $.command.list()
+  if(await enabled($,'color') && commands.some(c=>c.name === 'color')){
+    await $.command.run({command:'color',args:DONE_COLOUR})
+    if(await enabled($,'color')) await $.store.set(`color:${id}`,{set:DONE_COLOUR})
+  }
+  if(name && !hasDone(name) && !(await $.store.get(`rename:${id}`) as {disabled?:boolean}|null)?.disabled && await enabled($,'rename') && commands.some(c=>c.name === 'rename')){
+    const suffixName=appendDone(name)
+    if(await rename(suffixName) !== false) await writeObject($,markerPath((await dataDir($))!,id),{at:await $.clock.now(),reason:'done-command',suffixName})
+  }
+}
+
+/** Python reads and clears the owned marker; the snapshot supplies the host name. */
+export async function restoreDone($:EngineInterface,id:string,name:string|null,rename:(name:string)=>Promise<void|boolean>,closed=false){
+  const dir=await dataDir($)
+  if(!dir || !SAFE_ID.test(id) || id !== await $.session.id() || !await enabled($,'done')) return
+  const marker=await readMarker($,id)
+  if(!await writeObject($,markerPath(dir,id),{cleared:true,at:await $.clock.now()})) return
+  if((closed || (name && hasDone(name))) && await enabled($,'done')) await $.store.delete(`color:${id}`)
+  if(name && marker.suffixName === name && hasDone(name) && !(await $.store.get(`rename:${id}`) as {disabled?:boolean}|null)?.disabled && await enabled($,'rename')) await rename(stripDone(name))
+}
 
 const PANE='sessions'
 const REFRESH_MS=20_000
-const board=atom({plugin:'session-board',key:'board'} as const,null)
-const BOOTED={plugin:'session-board',key:'booted'} as const
+const BOARD={plugin:'background-sessions',key:'board'} as const
+const BOOTED={plugin:'background-sessions',key:'booted'} as const
 let running:Promise<Board>|null=null
 let queued=false, active=false, ending=false, closing=false
 let interactive=false
 let lastError:boolean|null=null
 let lastDrawn:number|null=null
 let pendingRename:{name:string;manual:boolean}|null=null
-const ownOrigin=(e:CommandRunInput)=>e.origin.kind === 'plugin' && e.origin.name === 'session-board'
+const ownOrigin=(e:CommandRunInput)=>e.origin.kind === 'plugin' && e.origin.name === 'background-sessions'
 const isManual=(value:unknown)=>!!value && typeof value === 'object' && (value as {manual?:unknown}).manual === true
-const debug=async($:EngineInterface,message:string)=>{try{await $.ui.log(`session-board: ${message}`,{to:'debug'})}catch{/* Diagnostics cannot interrupt a session. */}}
+async function debug($:EngineInterface,message:string){try{await $.ui.log(`background-sessions: ${message}`,{to:'debug'})}catch{/* Diagnostics cannot interrupt a session. */}}
 
 /** Pruning is driven only by a successful, complete helper inventory. */
-const pruneStore=async($:EngineInterface,current:Board)=>{
+async function pruneStore($:EngineInterface,current:Board){
   if(await readOnly($) || !await dataDir($) || current.errors.length || current.inventoryComplete === false) return
   const live=new Set(current.rows.flatMap(row=>[row.id,row.job]))
   live.add(await $.session.id()) // The running foreground session may have no background job.
@@ -34,12 +124,16 @@ const pruneStore=async($:EngineInterface,current:Board)=>{
 }
 
 /** One argv-based local process; overlapping callers share a snapshot. */
-const refresh=($:EngineInterface):Promise<Board>=>running ??= (async()=>{
+function refresh($:EngineInterface):Promise<Board>{
+  return running ??= collectBoard($)
+}
+
+async function collectBoard($:EngineInterface):Promise<Board>{
   const at=await $.clock.now()
   try{
     if(!await dataDir($)){
       const empty:Board={at,rows:[],errors:[]}
-      await update($,board,()=>empty)
+      await $.state.set(BOARD,empty)
       return empty
     }
     const readonly=await readOnly($)
@@ -48,18 +142,18 @@ const refresh=($:EngineInterface):Promise<Board>=>running ??= (async()=>{
     const value=JSON.parse(result.stdout) as Board
     if(!Number.isFinite(value.at) || !Array.isArray(value.rows) || !Array.isArray(value.errors) ||
       !value.rows.every(row=>row && typeof row.id === 'string' && typeof row.job === 'string' && typeof row.projectId === 'string' && typeof row.name === 'string' && typeof row.state === 'string' && typeof row.projectName === 'string' && typeof row.model === 'string')) {await helperFailed($);throw new Error('Invalid snapshot')}
-    await update($,board,()=>value)
+    await $.state.set(BOARD,value)
     await pruneStore($,value)
     return value
   }catch{
     await helperFailed($)
     const value:Board={at,rows:[],errors:['Unable to read sessions; check Python and file permissions.']}
-    await update($,board,()=>value)
+    await $.state.set(BOARD,value)
     return value
   }finally{running=null}
-})()
+}
 
-const reportUsage=async($:EngineInterface)=>{
+async function reportUsage($:EngineInterface){
   const dir=await dataDir($)
   if(!interactive || !dir || await readOnly($)) return
   try{
@@ -68,12 +162,13 @@ const reportUsage=async($:EngineInterface)=>{
     const {context}=await $.session.usage()
     const finite=(value:unknown)=>typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : null
     if(finite(context.window) === null || context.window <= 0) return
+    // Translate the engine-owned usage field to the plugin JSON contract.
     await writeObject($,`${dir}/usage/${id}.json`,{sessionId:id,model:clean(await $.session.model()),
-      tokens:finite(context.tokens),window:context.window,percent:finite(context.percent),at:await $.clock.now()})
+      contextUsed:finite(context.tokens),window:context.window,percent:finite(context.percent),at:await $.clock.now()})
   }catch{await debug($,'Usage report could not be written.')}
 }
 
-const rename=async($:EngineInterface,name:string)=>{
+async function rename($:EngineInterface,name:string){
   if(!await enabled($,'rename') || pendingRename?.manual || (await $.store.get(`rename:${await $.session.id()}`) as RenameState|null)?.disabled) return false
   const owned={name:safeName(name),manual:false}
   if(!owned.name) return false
@@ -82,7 +177,7 @@ const rename=async($:EngineInterface,name:string)=>{
   finally{if(pendingRename === owned) pendingRename=null}
 }
 
-const sync=async($:EngineInterface,current:Board)=>{
+async function sync($:EngineInterface,current:Board){
   if(ending || active || await readOnly($)) return
   const id=await $.session.id(),row=current.rows.find(one=>one.id === id)
   if(!row) return
@@ -112,7 +207,7 @@ const sync=async($:EngineInterface,current:Board)=>{
   if(await enabled($,'rename')) await $.store.set(key,disabled ? {...decision.state,disabled:true} : {...decision.state,lastSet:decision.name,prefix:safeName(row.projectShort ?? row.projectName)})
 }
 
-const schedule=($:EngineInterface)=>{
+function schedule($:EngineInterface){
   if(!interactive || queued) return
   queued=true
   $.clock.after(0,async()=>{
@@ -121,7 +216,7 @@ const schedule=($:EngineInterface)=>{
   })
 }
 
-export const register:Register=on=>{
+export function register(on:On){
   on('session.start',async($,e,next)=>{
     const mode=e as typeof e & {surfaces?:unknown[];traits?:string[]}
     interactive=e.isInteractive && mode.surfaces?.length !== 0 && !mode.traits?.includes('print')
@@ -172,9 +267,9 @@ export const register:Register=on=>{
   }).catch(($,e,next)=>next.called || !ownOrigin(e) ? next(e) : {text:''})
   on('command.run',{command:'rename'},async($,e,next)=>{
     if(ownOrigin(e)){
-      if(!await enabled($,'rename') || !pendingRename || pendingRename.manual || pendingRename.name !== e.args) return {text:''}
+      if(safeName(e.args) !== e.args || !await enabled($,'rename') || !pendingRename || pendingRename.manual || pendingRename.name !== e.args) return {text:''}
       if((await $.store.get(`rename:${await $.session.id()}`) as RenameState|null)?.disabled || (!closing && (ending || active))) return {text:''}
-      return next({...e,args:safeName(e.args)})
+      return next(e)
     }
     if(pendingRename) pendingRename.manual=true
     if(!await readOnly($) && await dataDir($)){
@@ -205,7 +300,7 @@ export const register:Register=on=>{
   on('ui.render',{component:'Pane',requestId:PANE},async($,e)=>{
     const {Box,Text}=$.ui.resolve(e)
     lastDrawn=await $.clock.now()
-    const current=await read($,board)
+    const current=(await $.state.get(BOARD)).value ?? null
     if(current === null || lastDrawn-current.at >= REFRESH_MS) schedule($)
     if(current === null) return <Text dimColor>Reading sessions…</Text>
     return <Box flexDirection="column">
