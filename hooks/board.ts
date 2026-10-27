@@ -11,7 +11,7 @@ export const LEGEND: { status: Status; label: string }[] = [
 ]
 
 /**
- * One status per session; bin/sessions row_status is the Python twin.
+ * One status per session; bin/sessions.py row_status is the Python twin.
  * A background job writes state 'done' after EVERY reply (idle, your turn): only 'stopped'
  * or an explicit done marker means closed.
  */

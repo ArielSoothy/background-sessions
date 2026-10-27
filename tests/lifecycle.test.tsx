@@ -16,11 +16,11 @@ const setup=(on:On,env:Record<string,string>={})=>{
  const stored=new Map<string,unknown>(),files=new Map<string,string>()
  const writes:{path:string;text:string}[]=[],colors:string[]=[],names:string[]=[],registered:string[]=[],argvs:string[][]=[]
  let board=structuredClone(BOARD),shown=false,available=true,percent=26,fail=false,truncate=false
- let readonly=false
+ let readonly=false,failStore=false
  let beforeList:(()=>Promise<void>)|undefined
  const disabled=new Set<string>()
- on('store.get',(_,e)=>({value:stored.get(e.key)}))
- on('store.set',(_,e)=>{stored.set(e.key,e.value);return {value:undefined}})
+ on('store.get',(_,e)=>{if(failStore) throw new Error('store unavailable');return {value:stored.get(e.key)}})
+ on('store.set',(_,e)=>{if(failStore) throw new Error('store unavailable');stored.set(e.key,e.value);return {value:undefined}})
  on('store.delete',(_,e)=>{stored.delete(e.key);return {value:undefined}})
  on('store.keys',()=>({value:[...stored.keys()]}))
  on('session.start',(_,e)=>({cwd:e.cwd}));on('session.end',(_,e)=>({sessionId:e.sessionId}))
@@ -48,13 +48,13 @@ const setup=(on:On,env:Record<string,string>={})=>{
    if(!JSON.parse(text).cleared || files.has(path)){writes.push({path,text});files.set(path,text)}
    return {value:{exitCode:0,stdout:'{"written":true}',stderr:'',isStdoutTruncated:false,isStderrTruncated:false}}
   }
-  expect(e.argv[0]).toBe('python3');expect(e.argv[1]?.endsWith('/bin/sessions')).toBe(true)
+  expect(e.argv[0]).toBe('python3');expect(e.argv[1]?.endsWith('/bin/sessions.py')).toBe(true)
   expect(e.argv.slice(2)).toEqual(readonly || env.BACKGROUND_SESSIONS_READ_ONLY === '1' ? ['--json','--own-session','session-1','--read-only'] : ['--json','--own-session','session-1'])
   return {value:{exitCode:fail ? 1 : 0,stdout:JSON.stringify({...board,at:clock.now(),rows:board.rows.map(row=>{const marker=[...files.entries()].find(([p])=>p.endsWith(`/done/${row.id}.json`));return {...row,closed:row.closed || (!!marker && !JSON.parse(marker[1]).cleared)}})}),stderr:'',isStdoutTruncated:truncate,isStderrTruncated:false}}
  })
  return {clock,stored,files,writes,colors,names,registered,argvs,disabled,
   set beforeList(v:(()=>Promise<void>)|undefined){beforeList=v},
-  set board(v:Board){board=v},set percent(v:number){percent=v},set available(v:boolean){available=v},set fail(v:boolean){fail=v},set truncate(v:boolean){truncate=v},set readonly(v:boolean){readonly=v}}
+  set board(v:Board){board=v},set percent(v:number){percent=v},set available(v:boolean){available=v},set fail(v:boolean){fail=v},set truncate(v:boolean){truncate=v},set readonly(v:boolean){readonly=v},set failStore(v:boolean){failStore=v}}
 }
 
 test('start reports numeric own usage, registers commands and prefixes the existing name',async($,on)=>{
@@ -261,4 +261,22 @@ test('a visible mounted pane updates after a polled snapshot without remounting'
  await w.clock.advance(20001)
  expect(!!await ui.find({type:'Text',text:'▶    '})).toBe(true)
  await ui.unmount()
+})
+
+for(const name of ['color','rename']){
+ test(`manual ${name} reaches the host when ownership storage fails`,async($,on)=>{
+  const w=setup(on);await $.session.start(start);await w.clock.advance(1)
+  w.colors.length=0;w.names.length=0;w.failStore=true
+  const result=await $.command.run(command(name,'Custom'))
+  expect(result.text).toBe('ok')
+  expect(name === 'color' ? w.colors : w.names).toEqual(['Custom'])
+ })
+}
+
+test('own-origin colour is suppressed when ownership storage fails before next',async($,on)=>{
+ const w=setup(on);await $.session.start(start);await w.clock.advance(1)
+ w.colors.length=0;w.failStore=true
+ const result=await $.command.run({...command('color','blue'),origin:{kind:'plugin',name:'background-sessions'}})
+ expect(result.text).toBe('')
+ expect(w.colors).toEqual([])
 })

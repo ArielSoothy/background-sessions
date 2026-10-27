@@ -8,7 +8,7 @@ import tempfile
 import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
-loader = importlib.machinery.SourceFileLoader('public_sessions', str(ROOT / 'bin/sessions'))
+loader = importlib.machinery.SourceFileLoader('public_sessions', str(ROOT / 'bin/sessions.py'))
 spec = importlib.util.spec_from_loader(loader.name, loader)
 sessions = importlib.util.module_from_spec(spec)
 loader.exec_module(sessions)
@@ -190,7 +190,7 @@ class PublicHelperTests(unittest.TestCase):
 
     def test_read_only_is_enforced_before_record_dispatch(self):
         env = {'PATH': os.getenv('PATH', os.defpath), 'HOME': str(self.home)}
-        argv = ['python3', str(ROOT / 'bin/sessions'), '--read-only', '--write-record', 'done', 's', '{"reason":"done-command","at":1}']
+        argv = ['python3', str(ROOT / 'bin/sessions.py'), '--read-only', '--write-record', 'done', 's', '{"reason":"done-command","at":1}']
         result = subprocess.run(argv, env=env, capture_output=True, text=True, check=True)
         self.assertFalse(json.loads(result.stdout)['written'])
         self.assertFalse((self.data / 'done').exists())
@@ -241,7 +241,7 @@ class PublicHelperTests(unittest.TestCase):
         before = (self.jobs / 'session-1/state.json').read_bytes()
         env = {'PATH': os.getenv('PATH', os.defpath), 'HOME': str(self.home)}
         def run(*args):
-            result = subprocess.run(['python3', str(ROOT / 'bin/sessions'), *args], env=env, capture_output=True, text=True, check=True)
+            result = subprocess.run(['python3', str(ROOT / 'bin/sessions.py'), *args], env=env, capture_output=True, text=True, check=True)
             return json.loads(result.stdout)
         self.assertTrue(run('--write-record', 'usage', 'session-1', '{"sessionId":"session-1","model":"example-model","contextUsed":26,"window":100,"percent":26,"at":1}')['written'])
         self.assertTrue(run('--write-record', 'done', 'session-1', '{"reason":"done-command","at":1}')['written'])
@@ -256,10 +256,10 @@ class PublicHelperTests(unittest.TestCase):
         custom = self.home / 'custom'
         self.put(custom / 'jobs/s/state.json', {'sessionId': 's', 'cwd': str(self.home / 'alpha')})
         env = {'PATH': os.getenv('PATH', os.defpath), 'HOME': str(self.home), 'CLAUDE_CONFIG_DIR': str(custom)}
-        result = subprocess.run(['python3', str(ROOT / 'bin/sessions'), '--json', '--read-only'], env=env, capture_output=True, text=True, check=True)
+        result = subprocess.run(['python3', str(ROOT / 'bin/sessions.py'), '--json', '--read-only'], env=env, capture_output=True, text=True, check=True)
         self.assertEqual(json.loads(result.stdout)['rows'][0]['id'], 's')
         env.pop('HOME')
-        result = subprocess.run(['python3', str(ROOT / 'bin/sessions'), '--json'], env=env, capture_output=True, text=True, check=True)
+        result = subprocess.run(['python3', str(ROOT / 'bin/sessions.py'), '--json'], env=env, capture_output=True, text=True, check=True)
         self.assertEqual(json.loads(result.stdout)['rows'][0]['id'], 's')
 
     def test_symlinked_config_root_and_ancestor(self):
@@ -319,7 +319,7 @@ class PublicHelperTests(unittest.TestCase):
     def test_ascii_stdout_json(self):
         self.job(cwd=str(self.home / '日本語'))
         env = {'PATH': os.getenv('PATH', os.defpath), 'HOME': str(self.home), 'PYTHONIOENCODING': 'ascii'}
-        result = subprocess.run(['python3', str(ROOT / 'bin/sessions'), '--json', '--read-only'], env=env, capture_output=True)
+        result = subprocess.run(['python3', str(ROOT / 'bin/sessions.py'), '--json', '--read-only'], env=env, capture_output=True)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(json.loads(result.stdout)['rows'][0]['projectName'], '日本語')
 
@@ -355,7 +355,7 @@ class PublicHelperTests(unittest.TestCase):
     def test_cli_default_width_ignores_unlisted_environment(self):
         self.job()
         env = {'PATH': os.getenv('PATH', os.defpath), 'HOME': str(self.home)}
-        argv = ['python3', str(ROOT / 'bin/sessions'), '--read-only', '--no-color']
+        argv = ['python3', str(ROOT / 'bin/sessions.py'), '--read-only', '--no-color']
         ordinary = subprocess.run(argv, env=env, capture_output=True, text=True, check=True).stdout
         altered = subprocess.run(argv, env=dict(env, COLUMNS='1', LINES='1'), capture_output=True, text=True, check=True).stdout
         self.assertEqual(altered, ordinary)

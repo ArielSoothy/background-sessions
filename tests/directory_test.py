@@ -8,6 +8,23 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class DirectoryTests(unittest.TestCase):
+    def test_capability_source_has_no_wrapped_calls_or_chained_registrations(self):
+        forbidden = (
+            r'\(await \$\.', r'\(\$ as', r'\$\.[a-zA-Z]+\?\.', r'\$\[',
+            r'\}\)\.catch\(', r'=>\s*[a-zA-Z]+\(\$',
+            r'\{[a-zA-Z, ]+\}\s*=\s*await \$\.',
+            r'\(await \w+\(\$[^\n]*\)\)[.!]',
+        )
+        for path in sorted((ROOT / 'hooks').glob('*.ts*')):
+            for pattern in forbidden:
+                self.assertNotRegex(path.read_text(), pattern, path.name)
+
+    def test_helper_is_readable_python_with_explicit_extension(self):
+        helper = ROOT / 'bin/sessions.py'
+        self.assertTrue(helper.is_file())
+        self.assertFalse((ROOT / 'bin/sessions').exists())
+        self.assertTrue(helper.read_text().startswith('#!/usr/bin/env python3\n'))
+
     def test_capability_helpers_are_local_function_declarations(self):
         register = (ROOT / 'hooks/register.tsx').read_text()
         for path in (ROOT / 'hooks').glob('*.ts'):

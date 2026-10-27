@@ -12,7 +12,7 @@ Persistent Claude plugin storage contains per-session prefix/colour ownership re
 
 The hook and helper read only `HOME`, `CLAUDE_CONFIG_DIR`, and the `BACKGROUND_SESSIONS_*` switches. None are sent anywhere or copied into argv or reports. The local helper inherits the process environment.
 
-The plugin itself sends nothing off the machine, makes no network requests and makes no model calls. It injects nothing into messages or session context. Its only child process is the local Python metadata helper, which runs only for interactive sessions and is skipped for print/headless sessions. Helper failures cause a ten-minute backoff for collection and record writes.
+The plugin itself sends nothing off the machine, makes no network requests and makes no model calls. It injects nothing into messages or session context. Its only child process is the local readable Python metadata helper `bin/sessions.py`, invoked as `python3 <plugin root>/bin/sessions.py`, which runs only for interactive sessions and is skipped for print/headless sessions. Helper failures cause a ten-minute backoff for collection and record writes.
 
 To clear local plugin files, remove the `background-sessions` folder under the active Claude root using your file manager while the plugin is disabled. Clear the plugin's persistent storage using Claude Code's plugin management controls. Uninstall or disable the plugin to prevent future reports. Names or colours already set through built-in commands remain until you change them. No remote copy is created by this plugin.
 

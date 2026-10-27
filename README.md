@@ -90,11 +90,11 @@ Every `$.process.run` call uses one of the following argv templates. There is no
 
 | Exact argv template | Why |
 | --- | --- |
-| `['python3', '<plugin root>/bin/sessions', '--json', '--own-session', '<session id>']` | Collect bounded local metadata and prune obsolete plugin usage/done files. |
-| `['python3', '<plugin root>/bin/sessions', '--json', '--own-session', '<session id>', '--read-only']` | Collect the same metadata with all helper mutations disabled. |
-| `['python3', '<plugin root>/bin/sessions', '--write-record', 'usage', '<session id>', '<JSON>']` | Atomically write this session's numeric usage and model identifier under plugin storage. |
-| `['python3', '<plugin root>/bin/sessions', '--read-marker', '<session id>']` | Read this session’s own done marker to check suffix ownership before clearing it. |
-| `['python3', '<plugin root>/bin/sessions', '--write-record', 'done', '<session id>', '<JSON>']` | Atomically write or clear this session's own close marker. Clearing an absent marker creates no file. |
+| `['python3', '<plugin root>/bin/sessions.py', '--json', '--own-session', '<session id>']` | Collect bounded local metadata and prune obsolete plugin usage/done files. |
+| `['python3', '<plugin root>/bin/sessions.py', '--json', '--own-session', '<session id>', '--read-only']` | Collect the same metadata with all helper mutations disabled. |
+| `['python3', '<plugin root>/bin/sessions.py', '--write-record', 'usage', '<session id>', '<JSON>']` | Atomically write this session's numeric usage and model identifier under plugin storage. |
+| `['python3', '<plugin root>/bin/sessions.py', '--read-marker', '<session id>']` | Read this session’s own done marker to check suffix ownership before clearing it. |
+| `['python3', '<plugin root>/bin/sessions.py', '--write-record', 'done', '<session id>', '<JSON>']` | Atomically write or clear this session's own close marker. Clearing an absent marker creates no file. |
 
 `<plugin root>` is `$.plugin.root`; `<session id>` comes from `$.session.id()`. Usage JSON contains only `sessionId`, `model`, `contextUsed`, `window`, `percent` and `at`. Done JSON contains `at` and either a fixed `reason` (`done-command` or `session-end`) or `cleared: true`; a marker may also contain `suffixName`, the exact title with the suffix the plugin added. The JSON is one argv element, never shell text. Python validates the schema, writes only `usage` or `done` files under the plugin folder, and refuses links while traversing directories. Calls have a five-second timeout. Missing Python disables helper collection and record writes for ten minutes and shows a pane diagnostic.
 

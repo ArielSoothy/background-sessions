@@ -20,7 +20,7 @@ const world=()=>{
   command:{list:async()=>[{name:'color'},{name:'rename'}],run:async(e:{command:string;args:string})=>{commands.push(`${e.command}:${e.args}`)}},
   clock:{now:async()=>1000},
  } as unknown as EngineInterface
- return {$,files,writes,commands,deleted,env,rename:async(name:string)=>{commands.push(`rename:${name}`)}}
+ return {$,files,writes,commands,deleted,env}
 }
 test('done suffix appends once, strips controls and trims trailing whitespace',()=>{
  expect(appendDone('Build   ')).toBe('Build · done')
@@ -33,17 +33,17 @@ test('done writes only an owned marker and dispatches supported own-session comm
  const w=world()
  expect(await markDone(w.$,'session-1')).toBe(true)
  expect(JSON.parse(w.files.get(w.writes[0]!)!).cleared).toBe(undefined)
- await applyDone(w.$,'session-1','Build',w.rename)
+ await applyDone(w.$,'session-1','Build')
  expect(w.writes.length).toBe(2)
  expect(w.commands).toEqual(['color:blue','rename:Build · done'])
  expect(JSON.parse(w.files.get(w.writes[0]!)!)).toEqual({at:1000,reason:'done-command',suffixName:'Build · done'})
 })
-test('a fresh resume clears only the own marker and renames through a callback',async()=>{
+test('a fresh resume clears only the own marker and renames through the local command helper',async()=>{
  const w=world()
  await markDone(w.$,'session-1')
- await applyDone(w.$,'session-1','Alpha · Build',w.rename)
+ await applyDone(w.$,'session-1','Alpha · Build')
  w.commands.length=0
- await restoreDone(w.$,'session-1','Alpha · Build · done',w.rename)
+ await restoreDone(w.$,'session-1','Alpha · Build · done')
  expect(JSON.parse(w.files.get(w.writes.at(-1)!)!).cleared).toBe(true)
  expect(w.commands).toEqual(['rename:Alpha · Build'])
  expect(w.deleted).toEqual(['color:session-1'])
@@ -52,7 +52,7 @@ test('a fresh resume clears only the own marker and renames through a callback',
 test('marker ids and commands cannot target other sessions',async()=>{
  const w=world()
  expect(await markDone(w.$,'../escape')).toBe(false)
- await applyDone(w.$,'other','Build',w.rename)
+ await applyDone(w.$,'other','Build')
  expect(w.commands).toEqual([])
  expect(w.writes).toEqual([])
 })
@@ -60,8 +60,8 @@ test('read-only suppresses markers, store changes and commands including resume'
  const w=world();await markDone(w.$,'session-1');w.writes.length=0
  w.env.BACKGROUND_SESSIONS_READ_ONLY='1'
  expect(await markDone(w.$,'session-1')).toBe(false)
- await restoreDone(w.$,'session-1','Build · done',w.rename)
- await applyDone(w.$,'session-1','Build',w.rename)
+ await restoreDone(w.$,'session-1','Build · done')
+ await applyDone(w.$,'session-1','Build')
  expect(w.writes).toEqual([]);expect(w.deleted).toEqual([]);expect(w.commands).toEqual([])
 })
 test('absolute config directory works without HOME',async()=>{
@@ -73,7 +73,7 @@ test('absolute config directory works without HOME',async()=>{
 })
 test('startup never strips a suffix without an exact owned marker',async()=>{
  const w=world();await markDone(w.$,'session-1')
- await restoreDone(w.$,'session-1','Build · done',w.rename)
+ await restoreDone(w.$,'session-1','Build · done')
  expect(w.commands).toEqual([])
 })
 

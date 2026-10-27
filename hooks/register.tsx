@@ -6,13 +6,17 @@ import type { RenameState } from './rename'
 import { appendDone, stripDone, hasDone, markerPath, DONE_COLOUR } from './done'
 import { SAFE_ID } from './settings'
 
-export async function readOnly($:EngineInterface){return await $.env.get('BACKGROUND_SESSIONS_READ_ONLY') === '1'}
+export async function readOnly($:EngineInterface){
+  const value=await $.env.get('BACKGROUND_SESSIONS_READ_ONLY')
+  return value === '1'
+}
 
 /** HOME is required only for the default root or tilde expansion. */
 export async function configRoot($:EngineInterface):Promise<string|null>{
   const home=await $.env.get('HOME')
   const validHome=home?.startsWith('/') && !home.includes('\0') ? home : null
-  let root=await $.env.get('CLAUDE_CONFIG_DIR') || (validHome ? `${validHome}/.claude` : '')
+  const configured=await $.env.get('CLAUDE_CONFIG_DIR')
+  let root=configured || (validHome ? `${validHome}/.claude` : '')
   if(root === '~' || root.startsWith('~/')){if(!validHome) return null;root=validHome+root.slice(1)}
   if(!root.startsWith('/') || root.includes('\0')) return null
   const parts:string[]=[]
@@ -39,8 +43,20 @@ export async function writeObject($:EngineInterface,path:string,value:unknown){
 export async function enabled($:EngineInterface,feature:'color'|'rename'|'done'){
   const dir=await dataDir($)
   if(dir === null || await readOnly($)) return false
-  const optOut=feature === 'color' ? await $.env.get('BACKGROUND_SESSIONS_NO_COLOR') : feature === 'rename' ? await $.env.get('BACKGROUND_SESSIONS_NO_RENAME') : await $.env.get('BACKGROUND_SESSIONS_NO_DONE')
-  return optOut !== '1' && !await $.fs.exists(`${dir}/no-${feature}`)
+  let optOut:string|undefined
+  if(feature === 'color'){
+    const value=await $.env.get('BACKGROUND_SESSIONS_NO_COLOR')
+    optOut=value
+  }else if(feature === 'rename'){
+    const value=await $.env.get('BACKGROUND_SESSIONS_NO_RENAME')
+    optOut=value
+  }else{
+    const value=await $.env.get('BACKGROUND_SESSIONS_NO_DONE')
+    optOut=value
+  }
+  if(optOut === '1') return false
+  const exists=await $.fs.exists(`${dir}/no-${feature}`)
+  return !exists
 }
 
 let retryAfter=0
@@ -50,9 +66,10 @@ export async function helperFailed($:EngineInterface){
 }
 /** Collection and record writes share a cooldown when Python fails. */
 export async function runHelper($:EngineInterface,args:string[]){
-  if(await $.clock.now() < retryAfter) return null
+  const now=await $.clock.now()
+  if(now < retryAfter) return null
   try{
-    const result=await $.process.run(['python3',`${$.plugin.root}/bin/sessions`,...args],{timeoutMs:5000})
+    const result=await $.process.run(['python3',`${$.plugin.root}/bin/sessions.py`,...args],{timeoutMs:5000})
     if(result.exitCode !== 0 || result.isStdoutTruncated) throw new Error('Helper failed')
     JSON.parse(result.stdout)
     return result
@@ -68,33 +85,51 @@ export async function readMarker($:EngineInterface,id:string):Promise<{suffixNam
 
 export async function markDone($:EngineInterface,id:string,reason='done-command'){
   const dir=await dataDir($)
-  if(!dir || !SAFE_ID.test(id) || id !== await $.session.id() || !await enabled($,'done')) return false
+  if(!dir || !SAFE_ID.test(id)) return false
+  const ownId=await $.session.id()
+  if(id !== ownId || !await enabled($,'done')) return false
   const marker=await readMarker($,id)
-  return writeObject($,markerPath(dir,id),{at:await $.clock.now(),reason,...(typeof marker.suffixName === 'string' ? {suffixName:marker.suffixName} : {})})
+  const at=await $.clock.now()
+  return writeObject($,markerPath(dir,id),{at,reason,...(typeof marker.suffixName === 'string' ? {suffixName:marker.suffixName} : {})})
 }
 
 /** All visible host changes use commands bound to the running session. */
-export async function applyDone($:EngineInterface,id:string,name:string|null,rename:(name:string)=>Promise<void|boolean>){
-  if(id !== await $.session.id() || !await enabled($,'done')) return
+export async function applyDone($:EngineInterface,id:string,name:string|null){
+  const ownId=await $.session.id()
+  if(id !== ownId || !await enabled($,'done')) return
   const commands=await $.command.list()
   if(await enabled($,'color') && commands.some(c=>c.name === 'color')){
     await $.command.run({command:'color',args:DONE_COLOUR})
     if(await enabled($,'color')) await $.store.set(`color:${id}`,{set:DONE_COLOUR})
   }
-  if(name && !hasDone(name) && !(await $.store.get(`rename:${id}`) as {disabled?:boolean}|null)?.disabled && await enabled($,'rename') && commands.some(c=>c.name === 'rename')){
-    const suffixName=appendDone(name)
-    if(await rename(suffixName) !== false) await writeObject($,markerPath((await dataDir($))!,id),{at:await $.clock.now(),reason:'done-command',suffixName})
+  if(name && !hasDone(name)){
+    const stored=await $.store.get(`rename:${id}`)
+    if(!(stored as RenameState|null)?.disabled && await enabled($,'rename') && commands.some(c=>c.name === 'rename')){
+      const suffixName=appendDone(name)
+      const renamed=await rename($,suffixName)
+      if(renamed !== false){
+        const dir=await dataDir($)
+        const at=await $.clock.now()
+        if(dir) await writeObject($,markerPath(dir,id),{at,reason:'done-command',suffixName})
+      }
+    }
   }
 }
 
 /** Python reads and clears the owned marker; the snapshot supplies the host name. */
-export async function restoreDone($:EngineInterface,id:string,name:string|null,rename:(name:string)=>Promise<void|boolean>,closed=false){
+export async function restoreDone($:EngineInterface,id:string,name:string|null,closed=false){
   const dir=await dataDir($)
-  if(!dir || !SAFE_ID.test(id) || id !== await $.session.id() || !await enabled($,'done')) return
+  if(!dir || !SAFE_ID.test(id)) return
+  const ownId=await $.session.id()
+  if(id !== ownId || !await enabled($,'done')) return
   const marker=await readMarker($,id)
-  if(!await writeObject($,markerPath(dir,id),{cleared:true,at:await $.clock.now()})) return
+  const at=await $.clock.now()
+  if(!await writeObject($,markerPath(dir,id),{cleared:true,at})) return
   if((closed || (name && hasDone(name))) && await enabled($,'done')) await $.store.delete(`color:${id}`)
-  if(name && marker.suffixName === name && hasDone(name) && !(await $.store.get(`rename:${id}`) as {disabled?:boolean}|null)?.disabled && await enabled($,'rename')) await rename(stripDone(name))
+  if(name && marker.suffixName === name && hasDone(name)){
+    const stored=await $.store.get(`rename:${id}`)
+    if(!(stored as RenameState|null)?.disabled && await enabled($,'rename')) await rename($,stripDone(name))
+  }
 }
 
 const PANE='sessions'
@@ -115,8 +150,10 @@ async function debug($:EngineInterface,message:string){try{await $.ui.log(`backg
 async function pruneStore($:EngineInterface,current:Board){
   if(await readOnly($) || !await dataDir($) || current.errors.length || current.inventoryComplete === false) return
   const live=new Set(current.rows.flatMap(row=>[row.id,row.job]))
-  live.add(await $.session.id()) // The running foreground session may have no background job.
-  for(const key of await $.store.keys()){
+  const ownId=await $.session.id()
+  live.add(ownId) // The running foreground session may have no background job.
+  const keys=await $.store.keys()
+  for(const key of keys){
     const match=/^(?:color|rename|task|taskTries):(.+)$/.exec(key)
     const obsolete=/^(?:task|taskTries):/.test(key)
     if((obsolete || (match && !live.has(match[1]!))) && !await readOnly($)) await $.store.delete(key)
@@ -137,7 +174,8 @@ async function collectBoard($:EngineInterface):Promise<Board>{
       return empty
     }
     const readonly=await readOnly($)
-    const result=await runHelper($,['--json','--own-session',await $.session.id(),...(readonly ? ['--read-only'] : [])])
+    const ownId=await $.session.id()
+    const result=await runHelper($,['--json','--own-session',ownId,...(readonly ? ['--read-only'] : [])])
     if(!result) throw new Error('Helper failed')
     const value=JSON.parse(result.stdout) as Board
     if(!Number.isFinite(value.at) || !Array.isArray(value.rows) || !Array.isArray(value.errors) ||
@@ -159,17 +197,23 @@ async function reportUsage($:EngineInterface){
   try{
     const id=await $.session.id()
     if(!SAFE_ID.test(id)) return
-    const {context}=await $.session.usage()
+    const usage=await $.session.usage()
+    const context=usage.context
     const finite=(value:unknown)=>typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : null
     if(finite(context.window) === null || context.window <= 0) return
     // Translate the engine-owned usage field to the plugin JSON contract.
-    await writeObject($,`${dir}/usage/${id}.json`,{sessionId:id,model:clean(await $.session.model()),
-      contextUsed:finite(context.tokens),window:context.window,percent:finite(context.percent),at:await $.clock.now()})
+    const model=await $.session.model()
+    const at=await $.clock.now()
+    await writeObject($,`${dir}/usage/${id}.json`,{sessionId:id,model:clean(model),
+      contextUsed:finite(context.tokens),window:context.window,percent:finite(context.percent),at})
   }catch{await debug($,'Usage report could not be written.')}
 }
 
 async function rename($:EngineInterface,name:string){
-  if(!await enabled($,'rename') || pendingRename?.manual || (await $.store.get(`rename:${await $.session.id()}`) as RenameState|null)?.disabled) return false
+  if(!await enabled($,'rename') || pendingRename?.manual) return false
+  const id=await $.session.id()
+  const stored=await $.store.get(`rename:${id}`)
+  if((stored as RenameState|null)?.disabled) return false
   const owned={name:safeName(name),manual:false}
   if(!owned.name) return false
   pendingRename=owned
@@ -179,38 +223,56 @@ async function rename($:EngineInterface,name:string){
 
 async function sync($:EngineInterface,current:Board){
   if(ending || active || await readOnly($)) return
-  const id=await $.session.id(),row=current.rows.find(one=>one.id === id)
+  const id=await $.session.id()
+  const row=current.rows.find(one=>one.id === id)
   if(!row) return
   const closed=row.closed ?? false
   if(await enabled($,'color')){
-    const key=`color:${id}`,previous=await $.store.get(key)
+    const key=`color:${id}`
+    const previous=await $.store.get(key)
     let percent=row.percent
-    try{const {context}=await $.session.usage();if(Number.isFinite(context.percent)) percent=context.percent}catch{/* Keep reported value. */}
+    try{
+      const usage=await $.session.usage()
+      if(Number.isFinite(usage.context.percent)) percent=usage.context.percent
+    }catch{/* Keep reported value. */}
     const status=rowStatus(lastError === null ? row.state : lastError ? 'error' : 'done',row.tasks,percent,closed)
     const color=STATUS_COLOR[status]
-    if(color && !isManual(previous) && (!previous || (previous as {set?:string}).set !== color) && (await $.command.list()).some(c=>c.name === 'color')){
-      if(ending || active || !await enabled($,'color') || isManual(await $.store.get(key))) return
-      await $.command.run({command:'color',args:color})
-      if(!isManual(await $.store.get(key)) && await enabled($,'color')) await $.store.set(key,{set:color})
+    if(color && !isManual(previous) && (!previous || (previous as {set?:string}).set !== color)){
+      const commands=await $.command.list()
+      if(commands.some(c=>c.name === 'color')){
+        if(ending || active || !await enabled($,'color')) return
+        const before=await $.store.get(key)
+        if(isManual(before)) return
+        await $.command.run({command:'color',args:color})
+        const after=await $.store.get(key)
+        if(!isManual(after) && await enabled($,'color')) await $.store.set(key,{set:color})
+      }
     }
   }
   if(ending || active || closed || !await enabled($,'rename')) return
-  const key=`rename:${id}`,previous=await $.store.get(key) as RenameState|null
+  const key=`rename:${id}`
+  const stored=await $.store.get(key)
+  const previous=stored as RenameState|null
   const decision=decideRename(row.rawName ?? null,row,previous)
   if(decision.name === null){if(await enabled($,'rename')) await $.store.set(key,decision.state);return}
-  if(!(await $.command.list()).some(c=>c.name === 'rename')) return
+  const commands=await $.command.list()
+  if(!commands.some(c=>c.name === 'rename')) return
   // Recheck the host name after asynchronous observation, before entering the command queue.
-  const latest=(await refresh($)).rows.find(one=>one.id === id)
-  if(ending || active || latest?.rawName !== row.rawName || (await $.store.get(key) as RenameState|null)?.disabled) return
+  const refreshed=await refresh($)
+  const latest=refreshed.rows.find(one=>one.id === id)
+  if(ending || active || latest?.rawName !== row.rawName) return
+  const before=await $.store.get(key)
+  if((before as RenameState|null)?.disabled) return
   await rename($,decision.name)
-  const disabled=(await $.store.get(key) as RenameState|null)?.disabled
+  const after=await $.store.get(key)
+  const disabled=(after as RenameState|null)?.disabled
   if(await enabled($,'rename')) await $.store.set(key,disabled ? {...decision.state,disabled:true} : {...decision.state,lastSet:decision.name,prefix:safeName(row.projectShort ?? row.projectName)})
 }
 
 function schedule($:EngineInterface){
   if(!interactive || queued) return
   queued=true
-  $.clock.after(0,async()=>{
+  const timer=$.clock.after(0,async()=>{
     try{const current=await refresh($);await sync($,current)}catch{await debug($,'Lifecycle refresh failed.')}
     finally{queued=false}
   })
@@ -223,22 +285,29 @@ export function register(on:On){
     if(!interactive) return next(e)
     ending=false;active=false;lastError=null
     const result=await next(e)
-    const reload=(await $.state.get(BOOTED)).value === true
+    const booted=await $.state.get(BOOTED)
+    const reload=booted.value === true
     await $.state.set(BOOTED,true)
     if(!reload && !await readOnly($)){
-      const current=await refresh($),id=await $.session.id()
+      const current=await refresh($)
+      const id=await $.session.id()
       const own=current.rows.find(row=>row.id === id)
       closing=true
-      try{await restoreDone($,id,own?.rawName ?? null,name=>rename($,name),own?.closed ?? false)}finally{closing=false}
-      if(!await readOnly($) && !isManual(await $.store.get(`color:${id}`))) await $.store.delete(`color:${id}`)
+      try{await restoreDone($,id,own?.rawName ?? null,own?.closed ?? false)}finally{closing=false}
+      if(!await readOnly($)){
+        const stored=await $.store.get(`color:${id}`)
+        if(!isManual(stored)) await $.store.delete(`color:${id}`)
+      }
     }
     await reportUsage($)
     schedule($)
     if(e.isInteractive){
       await $.command.register({name:'sessions',description:'Toggle the background Sessions pane',immediate:true})
       await $.command.register({name:'done',description:'Mark this session closed in the board',immediate:true})
-      $.clock.every(REFRESH_MS,async()=>{
-        if(lastDrawn !== null && (await $.ui.panes()).some(p=>p.id === PANE && p.isShown && p.isPlaced)) schedule($)
+      const timer=$.clock.every(REFRESH_MS,async()=>{
+        if(lastDrawn === null) return
+        const panes=await $.ui.panes()
+        if(panes.some(p=>p.id === PANE && p.isShown && p.isPlaced)) schedule($)
       })
     }
     return result
@@ -253,54 +322,84 @@ export function register(on:On){
     ending=true
     if(interactive && e.reason !== 'resume'){
       // Exit persists only the marker; no queued commands or direct host-file fallback.
-      try{await markDone($,await $.session.id(),'session-end')}catch{await debug($,'Close marker could not be written.')}
+      try{
+        const id=await $.session.id()
+        await markDone($,id,'session-end')
+      }catch{await debug($,'Close marker could not be written.')}
     }
     return next(e)
   })
   on('command.run',{command:'color'},async($,e,next)=>{
-    if(ownOrigin(e)){
-      if(!await enabled($,'color') || (!closing && (ending || active || isManual(await $.store.get(`color:${await $.session.id()}`))))) return {text:''}
+    try{
+      if(ownOrigin(e)){
+        if(!await enabled($,'color')) return {text:''}
+        if(!closing && (ending || active)) return {text:''}
+        if(!closing){
+          const id=await $.session.id()
+          const stored=await $.store.get(`color:${id}`)
+          if(isManual(stored)) return {text:''}
+        }
+        return await next(e)
+      }
+      if(!await readOnly($) && await dataDir($)){
+        const id=await $.session.id()
+        await $.store.set(`color:${id}`,{manual:true})
+      }
+      return await next(e)
+    }catch{
+      if(!next.called && ownOrigin(e)) return {text:''}
       return next(e)
     }
-    if(!ownOrigin(e) && !await readOnly($) && await dataDir($)) await $.store.set(`color:${await $.session.id()}`,{manual:true})
-    return next(e)
-  }).catch(($,e,next)=>next.called || !ownOrigin(e) ? next(e) : {text:''})
+  })
   on('command.run',{command:'rename'},async($,e,next)=>{
-    if(ownOrigin(e)){
-      if(safeName(e.args) !== e.args || !await enabled($,'rename') || !pendingRename || pendingRename.manual || pendingRename.name !== e.args) return {text:''}
-      if((await $.store.get(`rename:${await $.session.id()}`) as RenameState|null)?.disabled || (!closing && (ending || active))) return {text:''}
+    try{
+      if(ownOrigin(e)){
+        if(safeName(e.args) !== e.args || !await enabled($,'rename') || !pendingRename || pendingRename.manual || pendingRename.name !== e.args) return {text:''}
+        const id=await $.session.id()
+        const stored=await $.store.get(`rename:${id}`)
+        if((stored as RenameState|null)?.disabled || (!closing && (ending || active))) return {text:''}
+        return await next(e)
+      }
+      if(pendingRename) pendingRename.manual=true
+      if(!await readOnly($) && await dataDir($)){
+        const id=await $.session.id()
+        const key=`rename:${id}`
+        const stored=await $.store.get(key)
+        const previous=stored as RenameState|null
+        await $.store.set(key,{...previous,projectId:previous?.projectId ?? '',disabled:true})
+      }
+      return await next(e)
+    }catch{
+      if(!next.called && ownOrigin(e)) return {text:''}
       return next(e)
     }
-    if(pendingRename) pendingRename.manual=true
-    if(!await readOnly($) && await dataDir($)){
-      const id=await $.session.id(),key=`rename:${id}`
-      const previous=await $.store.get(key) as RenameState|null
-      await $.store.set(key,{...previous,projectId:previous?.projectId ?? '',disabled:true})
-    }
-    return next(e)
-  }).catch(($,e,next)=>next.called || !ownOrigin(e) ? next(e) : {text:''})
+  })
   on('command.run',{command:'sessions'},async $=>{
-    if((await $.ui.panes()).some(p=>p.id === PANE)){await $.ui.close({id:PANE});lastDrawn=null;return {text:'Sessions closed.'}}
+    const panes=await $.ui.panes()
+    if(panes.some(p=>p.id === PANE)){await $.ui.close({id:PANE});lastDrawn=null;return {text:'Sessions closed.'}}
     await $.ui.open({id:PANE,title:'Sessions'});return {text:'Sessions opened.'}
   })
   on('command.run',{command:'done'},async $=>{
     if(!interactive) return {text:'Done marking is disabled.'}
     const id=await $.session.id()
     if(!await markDone($,id)) return {text:'Done marking is disabled.'}
-    $.clock.after(0,async()=>{
+    const timer=$.clock.after(0,async()=>{
       try{
         const current=await refresh($)
         closing=true
-        try{await applyDone($,id,current.rows.find(row=>row.id === id)?.rawName ?? null,name=>rename($,name))}finally{closing=false}
+        try{await applyDone($,id,current.rows.find(row=>row.id === id)?.rawName ?? null)}finally{closing=false}
       }catch{await debug($,'Close commands could not be applied.')}
       schedule($)
     })
     return {text:'Marked closed in the board. Resume this session to reopen it.'}
   })
   on('ui.render',{component:'Pane',requestId:PANE},async($,e)=>{
-    const {Box,Text}=$.ui.resolve(e)
-    lastDrawn=await $.clock.now()
-    const current=(await $.state.get(BOARD)).value ?? null
+    const components=$.ui.resolve(e)
+    const {Box,Text}=components
+    const now=await $.clock.now()
+    lastDrawn=now
+    const board=await $.state.get(BOARD)
+    const current=board.value ?? null
     if(current === null || lastDrawn-current.at >= REFRESH_MS) schedule($)
     if(current === null) return <Text dimColor>Reading sessions…</Text>
     return <Box flexDirection="column">
