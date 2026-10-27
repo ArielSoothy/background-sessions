@@ -1,0 +1,7 @@
+.claude-plugin/types/
+.DS_Store
+node_modules/
+bun.lock*
+*.log
+__pycache__/
+*.pyc

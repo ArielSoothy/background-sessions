@@ -1,0 +1,19 @@
+{
+  "name": "session-board",
+  "version": "0.3.0",
+  "description": "Group background Claude Code sessions by working folder, with status colours and local usage reports.",
+  "types": "./types/index.d.ts",
+  "author": {
+    "name": "Ariel Soothy"
+  },
+  "license": "MIT",
+  "homepage": "https://github.com/ArielSoothy/session-board",
+  "repository": "https://github.com/ArielSoothy/session-board",
+  "keywords": [
+    "sessions",
+    "productivity",
+    "status",
+    "projects"
+  ],
+  "icon": "./.claude-plugin/icon.png"
+}
